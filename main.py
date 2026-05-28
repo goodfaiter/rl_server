@@ -165,10 +165,6 @@ async def process_json(timestamp, file: UploadFile = File(...)) -> Path:
         f.write(content)
     return json_path
 
-async def check_folder_exists(timestamp: str) -> bool:
-    folder = SERVER_DATA_DIR / timestamp
-    return folder.exists() and folder.is_dir()
-
 
 async def create_folder_for_timestamp(timestamp: str):
     folder = SERVER_DATA_DIR / timestamp
@@ -229,7 +225,7 @@ async def process_request(file: UploadFile = File(...)):
         timestamp = datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
         suffix = 0
         timestamp = f"{timestamp}_{suffix:02d}"
-        while await check_folder_exists(timestamp):
+        while timestamp in background_jobs:
             suffix += 1
             timestamp = f"{timestamp}_{suffix:02d}"
         await create_folder_for_timestamp(timestamp)
