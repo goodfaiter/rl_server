@@ -1,5 +1,5 @@
 [project]
-name = "rl-server"
+name = "rl_server"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
@@ -7,11 +7,11 @@ requires-python = "==3.11.*"
 dependencies = [
     "fastapi>=0.136.1",
     "generate_vsim",
-    "optimal-morphology-rl",
+    "optimal_morphology_rl",
     "python-multipart>=0.0.28",
     "uvicorn>=0.47.0",
 ]
 
 [tool.uv.sources]
 generate_vsim = { workspace = true }
-optimal-morphology-rl = { workspace = true }
+optimal_morphology_rl = { workspace = true }
