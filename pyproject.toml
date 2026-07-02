@@ -6,12 +6,12 @@ readme = "README.md"
 requires-python = "==3.11.*"
 dependencies = [
     "fastapi>=0.136.1",
-    "generate_vsim",
+    "oph_to_urdf",
     "optimal_morphology_rl",
     "python-multipart>=0.0.28",
     "uvicorn>=0.47.0",
 ]
 
 [tool.uv.sources]
-generate_vsim = { workspace = true }
+oph_to_urdf = { workspace = true }
 optimal_morphology_rl = { workspace = true }

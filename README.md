@@ -8,7 +8,8 @@ uv run python3 main.py
 
 To access:
 ```
-curl -X POST https://rl-server.kindlyscientific.com/run -F "file=@/home/val/Downloads/test.json"
+curl -X POST https://rl-server.kindlyscientific.com/run/tomato -F "file=@/home/val/Downloads/test.json"
+curl -X POST https://rl-server.kindlyscientific.com/run/drawer -F "file=@/home/val/Downloads/test.json"
 >> {"status":"started","timestamp":"2026_05_22_15_05_17"}
 curl "https://rl-server.kindlyscientific.com/check?timestamp=2026_05_22_15_05_17"
 >> {"timestamp":"2026_05_22_15_05_17","status":"running"}

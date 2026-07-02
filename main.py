@@ -1,5 +1,6 @@
 import json
 import asyncio
+import shutil
 from pathlib import Path
 from typing import Tuple
 import zipfile
@@ -7,6 +8,7 @@ from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import FileResponse
 from datetime import datetime
 
+DATA_DIR = Path("/workspace/data")
 SERVER_DATA_DIR = Path("/workspace/data/server")
 
 app = FastAPI()
@@ -21,9 +23,13 @@ async def run_cmd(cmd: list) -> Tuple[str, str]:
     return stdout.decode("utf-8", errors="replace"), stderr.decode("utf-8", errors="replace")
 
 
-async def run_rl(timestamp: str) -> Tuple[Path, Path]:
+async def run_rl(timestamp: str, object: str, cached_policy: Path) -> Tuple[Path, Path]:
     vsim_path = SERVER_DATA_DIR / timestamp / f"{timestamp}.vsim"
     folder_path = SERVER_DATA_DIR / timestamp
+
+    max_epochs = 750
+    if cached_policy:
+        max_epochs = 100  # Reduce epochs if using cached policy
 
     cmd = [
         "uv",
@@ -31,6 +37,8 @@ async def run_rl(timestamp: str) -> Tuple[Path, Path]:
         "python3",
         "/workspace/vlearn/train/rl_games_train.py",
         "hand",
+        "train",
+        str(cached_policy) if cached_policy else "",
         "--headless",
         "True",
         "--vsim_path",
@@ -38,7 +46,11 @@ async def run_rl(timestamp: str) -> Tuple[Path, Path]:
         "--experiment_name",
         str(folder_path),
         "--max_epochs",
-        "500",
+        str(max_epochs),
+        "--num_envs",
+        "4096",
+        "--object",
+        object,
     ]
 
     # Wait for completion and capture output
@@ -54,8 +66,24 @@ async def run_rl(timestamp: str) -> Tuple[Path, Path]:
         f.write("\n\nSTDERR:\n")
         f.write(stderr_str)
 
+async def check_for_cached_policy(timestamp: str, object: str, num_dof: int) -> Path:
+    """Check if a cached policy exists for the given object and number of DOF."""
+    cache_dir = DATA_DIR / "cache" / object
+    matches = list(cache_dir.glob(f"{num_dof}_*_cache.pth"))
+    return matches[0] if matches else None
 
-async def test_rl(timestamp: str) -> Tuple[Path, Path]:
+async def cache_policy(timestamp: str, object: str, num_dof: int) -> Path:
+    """Cache the trained policy for later use."""
+    if await check_for_cached_policy(timestamp, object, num_dof) is not None:
+        return
+    folder_path = SERVER_DATA_DIR / timestamp
+    policy_path = folder_path / "nn/hand_object.pth"
+    cache_path = DATA_DIR / "cache" / object / f"{num_dof}_{timestamp}_cache.pth"
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(policy_path, cache_path)
+    return cache_path
+
+async def test_rl(timestamp: str, object: str) -> Tuple[Path, Path]:
     folder_path = SERVER_DATA_DIR / timestamp
     policy_path = folder_path / "nn/hand_object.pth"
     vsim_path = SERVER_DATA_DIR / timestamp / f"{timestamp}.vsim"
@@ -75,11 +103,13 @@ async def test_rl(timestamp: str) -> Tuple[Path, Path]:
         "--games_num",
         "1",
         "--max_episode_length",
-        "120",
+        "240",
         "--num_envs",
         "1",
         "--record_output_path",
         str(folder_path),
+        "--object",
+        object,
     ]
 
     # Wait for completion and capture output
@@ -95,10 +125,7 @@ async def test_rl(timestamp: str) -> Tuple[Path, Path]:
         f.write("\n\nSTDERR:\n")
         f.write(stderr_str)
 
-
-async def create_video(timestamp: str):
-    # run ffmpeg -framerate 60 -i step_%06d.png -c:v libx264 -pix_fmt yuv420p output.mp4
-    folder_path = SERVER_DATA_DIR / timestamp / "table_with_camera/camera_0"
+async def png_to_video(folder_path: Path, timestamp: str):
     cmd = [
         "ffmpeg",
         "-framerate",
@@ -122,9 +149,15 @@ async def create_video(timestamp: str):
         f.write("\n\nSTDERR:\n")
         f.write(stderr_str)
 
+async def create_video(timestamp: str):
+    # run ffmpeg -framerate 60 -i step_%06d.png -c:v libx264 -pix_fmt yuv420p output.mp4
+    cameras = ["camera_0", "camera_1"]
+    for camera in cameras:
+        folder_path = SERVER_DATA_DIR / timestamp / f"table_with_camera/{camera}"
+        await png_to_video(folder_path, timestamp)
 
-async def generate_vsim(timestamp: str):
-    from generate_vsim import load_params, generate_hand_urdf, urdf_to_text
+async def generate_vsim(timestamp: str) -> int:
+    from oph_to_urdf import load_params, generate_hand_urdf, urdf_to_text
 
     json_path = SERVER_DATA_DIR / timestamp / f"{timestamp}.json"
 
@@ -146,16 +179,20 @@ async def generate_vsim(timestamp: str):
     n_links = len(urdf.robot.links)
     n_joints = len(urdf.robot.joints)
     n_rev = sum(1 for j in urdf.robot.joints if j.type == "revolute")
-    print(f"  Links: {n_links}  |  Joints: {n_joints} ({n_rev} revolute)")
+    print(f"  Links: {n_links}  |  Joints: {n_joints} ({n_rev} revolute) | Tendons: {len(urdf._tendons)}")
+
+    return len(urdf._tendons)
 
 
 async def zip_results(timestamp: str) -> FileResponse:
     zip_path = SERVER_DATA_DIR / timestamp / f"{timestamp}.zip"
     reward_log_path = SERVER_DATA_DIR / timestamp / f"{timestamp}_reward_log.txt"
-    video_output_path = SERVER_DATA_DIR / timestamp / "table_with_camera/camera_0" / f"{timestamp}.mp4"
+    cameras = ["camera_0", "camera_1"]
+    video_output_paths = [SERVER_DATA_DIR / timestamp / f"table_with_camera/{camera}" / f"{timestamp}.mp4" for camera in cameras]
     with zipfile.ZipFile(zip_path, "w") as zipf:
         zipf.write(reward_log_path, reward_log_path.name)
-        zipf.write(video_output_path, video_output_path.name)
+        for i, video_output_path in enumerate(video_output_paths):
+            zipf.write(video_output_path, video_output_path.name + f"_{i:02d}.mp4")
 
 
 async def process_json(timestamp, file: UploadFile = File(...)) -> Path:
@@ -180,10 +217,12 @@ def _cleanup_background_job(task: asyncio.Task):
         print(f"Background job {timestamp} failed: {exc}")
 
 
-async def run_pipeline(timestamp: str):
-    await generate_vsim(timestamp)
-    await run_rl(timestamp)
-    await test_rl(timestamp)
+async def run_pipeline(timestamp: str, object: str):
+    num_dof = await generate_vsim(timestamp)
+    cached_policy = await check_for_cached_policy(timestamp, object, num_dof)
+    await run_rl(timestamp, object, cached_policy)
+    await cache_policy(timestamp, object, num_dof)
+    await test_rl(timestamp, object)
     await create_video(timestamp)
     await zip_results(timestamp)
     print(f"Background job {timestamp} finished")
@@ -211,8 +250,7 @@ async def check_request(timestamp: str):
     return {"timestamp": timestamp, "status": "running"}
 
 
-@app.post("/run")
-async def process_request(file: UploadFile = File(...)):
+async def process(file: UploadFile = File(...), object: str = "tomato"):
     """Receive JSON file, process locally, return results"""
 
     # Validate file type
@@ -230,7 +268,7 @@ async def process_request(file: UploadFile = File(...)):
             timestamp = f"{timestamp}_{suffix:02d}"
         await create_folder_for_timestamp(timestamp)
         await process_json(timestamp, file)
-        task = asyncio.create_task(run_pipeline(timestamp), name=timestamp)
+        task = asyncio.create_task(run_pipeline(timestamp, object), name=timestamp)
         background_jobs[timestamp] = task
         task.add_done_callback(_cleanup_background_job)
         return {"status": "started", "timestamp": timestamp}
@@ -240,6 +278,22 @@ async def process_request(file: UploadFile = File(...)):
     except Exception as e:
         raise HTTPException(500, f"Processing error: {str(e)}")
 
+
+@app.post("/run/tomato")
+async def process_request(file: UploadFile = File(...)):
+    return await process(file, object="tomato")
+
+@app.post("/run/drawer")
+async def process_request(file: UploadFile = File(...)):
+    return await process(file, object="drawer")
+
+@app.post("/run/button")
+async def process_request(file: UploadFile = File(...)):
+    return await process(file, object="button")
+
+@app.post("/run/cube")
+async def process_request(file: UploadFile = File(...)):
+    return await process(file, object="cube")
 
 @app.get("/health")
 async def health():
