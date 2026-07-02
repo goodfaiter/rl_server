@@ -427,3 +427,11 @@ FodyWeavers.xsd
 *.msix
 *.msm
 *.msp
+
+# Virtual environments
+.venv/
+*egg*
+assets/
+data/
+imgui.ini
+build/
