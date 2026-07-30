@@ -3,7 +3,7 @@
 To start:
 ```
 cloudflared tunnel run --token CLOUDFLARE_TOKEN
-uv run python3 main.py
+uv run python3 rl_server.py
 ```
 
 To access:
