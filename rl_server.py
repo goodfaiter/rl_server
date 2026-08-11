@@ -68,8 +68,8 @@ async def run_rl(timestamp: str, object: str, cached_policy: Path) -> Tuple[Path
 
 async def check_for_cached_policy(timestamp: str, object: str, num_dof: int) -> Path:
     """Check if a cached policy exists for the given object and number of DOF."""
-    if object == "cube":
-        return None  # No caching for cube object
+    if object in ["cube", "button_difficult"]:
+        return None  # No caching for these objects
     cache_dir = DATA_DIR / "cache" / object
     matches = list(cache_dir.glob(f"{num_dof}_*_cache.pth"))
     return matches[0] if matches else None
@@ -292,6 +292,10 @@ async def process_request(file: UploadFile = File(...)):
 @app.post("/run/button")
 async def process_request(file: UploadFile = File(...)):
     return await process(file, object="button")
+
+@app.post("/run/button_difficult")
+async def process_request(file: UploadFile = File(...)):
+    return await process(file, object="button_difficult")
 
 @app.post("/run/cube")
 async def process_request(file: UploadFile = File(...)):
