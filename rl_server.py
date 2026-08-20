@@ -1,4 +1,5 @@
 import json
+import os
 import asyncio
 import shutil
 from pathlib import Path
@@ -10,6 +11,16 @@ from datetime import datetime
 
 DATA_DIR = Path("/workspace/data")
 SERVER_DATA_DIR = Path("/workspace/data/server")
+
+def clear_vlearn_convex_cache():
+    """Remove cached cooked convex meshes so .vsim settings are re-applied."""
+    vl_root = os.environ.get("VL_WORKING_DIRECTORY", "/workspace/vlearn")
+    cache_dir = Path(vl_root) / "cache" / "tmp"
+    if cache_dir.exists():
+        for f in cache_dir.glob("*.bin"):
+            f.unlink(missing_ok=True)
+        print(f"Cleared vlearn convex cache: {cache_dir}")
+
 
 app = FastAPI()
 semaphore = asyncio.Semaphore(4)  # Max 4 concurrent heavy processes
@@ -220,6 +231,7 @@ def _cleanup_background_job(task: asyncio.Task):
 
 
 async def run_pipeline(timestamp: str, object: str):
+    clear_vlearn_convex_cache()
     num_dof = await generate_vsim(timestamp)
     cached_policy = await check_for_cached_policy(timestamp, object, num_dof)
     await run_rl(timestamp, object, cached_policy)
