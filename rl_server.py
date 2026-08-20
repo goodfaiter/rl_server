@@ -1,211 +1,91 @@
 import json
-import os
 import asyncio
-import shutil
 from pathlib import Path
-from typing import Tuple
-import zipfile
+from typing import Optional
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import FileResponse
 from datetime import datetime
 
+from optimal_morphology_rl_pipeline.rl_pipeline import (
+    build_test_cmd,
+    build_train_cmd,
+    cache_policy,
+    clear_vlearn_convex_cache,
+    create_videos,
+    find_cached_policy,
+    generate_vsim_from_json,
+    run_cmd,
+    zip_run_artifacts,
+)
+
 DATA_DIR = Path("/workspace/data")
 SERVER_DATA_DIR = Path("/workspace/data/server")
-
-def clear_vlearn_convex_cache():
-    """Remove cached cooked convex meshes so .vsim settings are re-applied."""
-    vl_root = os.environ.get("VL_WORKING_DIRECTORY", "/workspace/vlearn")
-    cache_dir = Path(vl_root) / "cache" / "tmp"
-    if cache_dir.exists():
-        for f in cache_dir.glob("*.bin"):
-            f.unlink(missing_ok=True)
-        print(f"Cleared vlearn convex cache: {cache_dir}")
-
 
 app = FastAPI()
 semaphore = asyncio.Semaphore(4)  # Max 4 concurrent heavy processes
 background_jobs: dict[str, asyncio.Task] = {}
 
 
-async def run_cmd(cmd: list) -> Tuple[str, str]:
-    """Run a command asynchronously and capture stdout/stderr."""
-    proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=None)
-    stdout, stderr = await proc.communicate()
-    return stdout.decode("utf-8", errors="replace"), stderr.decode("utf-8", errors="replace")
-
-
-async def run_rl(timestamp: str, object: str, cached_policy: Path) -> Tuple[Path, Path]:
+async def run_rl(timestamp: str, object: str, cached_policy: Optional[Path]) -> None:
     vsim_path = SERVER_DATA_DIR / timestamp / f"{timestamp}.vsim"
     folder_path = SERVER_DATA_DIR / timestamp
 
-    max_epochs = 750
-    if cached_policy:
-        max_epochs = 100  # Reduce epochs if using cached policy
-
-    cmd = [
-        "uv",
-        "run",
-        "python3",
-        "/workspace/vlearn/train/rl_games_train.py",
-        "hand",
-        "train",
-        str(cached_policy) if cached_policy else "",
-        "--headless",
-        "True",
-        "--vsim_path",
-        str(vsim_path),
-        "--experiment_name",
-        str(folder_path),
-        "--max_epochs",
-        str(max_epochs),
-        "--num_envs",
-        "4096",
-        "--object",
+    cmd = build_train_cmd(
+        folder_path,
+        vsim_path,
         object,
-    ]
+        cached_policy,
+        max_epochs=750,
+        num_envs=4096,
+    )
+    log_path = folder_path / f"{vsim_path.stem}_train_output.log"
 
-    # Wait for completion and capture output
-    stdout_str, stderr_str = await run_cmd(cmd)
+    # Run the blocking subprocess in a thread pool.
+    await asyncio.to_thread(run_cmd, cmd, log_path=log_path)
 
-    # write to log files for debugging
-    train_output_name = f"{vsim_path.stem}_train_output.log"
-    train_output_path = folder_path / train_output_name
-    with open(train_output_path, "w") as f:
-        f.write(" ".join(cmd) + "\n\n")
-        f.write("STDOUT:\n")
-        f.write(stdout_str)
-        f.write("\n\nSTDERR:\n")
-        f.write(stderr_str)
 
-async def check_for_cached_policy(timestamp: str, object: str, num_dof: int) -> Path:
-    """Check if a cached policy exists for the given object and number of DOF."""
-    if object in ["cube", "button_difficult"]:
-        return None  # No caching for these objects
-    cache_dir = DATA_DIR / "cache" / object
-    matches = list(cache_dir.glob(f"{num_dof}_*_cache.pth"))
-    return matches[0] if matches else None
+async def check_for_cached_policy(object: str, num_dof: int) -> Optional[Path]:
+    return find_cached_policy(
+        object,
+        num_dof,
+        excluded_objects=("cube", "button_difficult"),
+    )
 
-async def cache_policy(timestamp: str, object: str, num_dof: int) -> Path:
-    """Cache the trained policy for later use."""
-    if await check_for_cached_policy(timestamp, object, num_dof) is not None:
-        return
+
+async def cache_trained_policy(timestamp: str, object: str, num_dof: int) -> Optional[Path]:
     folder_path = SERVER_DATA_DIR / timestamp
-    policy_path = folder_path / "nn/hand_object.pth"
-    cache_path = DATA_DIR / "cache" / object / f"{num_dof}_{timestamp}_cache.pth"
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(policy_path, cache_path)
-    return cache_path
+    return cache_policy(
+        object,
+        num_dof,
+        folder_path,
+        skip_if_exists=True,
+    )
 
-async def test_rl(timestamp: str, object: str) -> Tuple[Path, Path]:
+
+async def test_rl(timestamp: str, object: str) -> None:
     folder_path = SERVER_DATA_DIR / timestamp
-    policy_path = folder_path / "nn/hand_object.pth"
     vsim_path = SERVER_DATA_DIR / timestamp / f"{timestamp}.vsim"
 
-    cmd = [
-        "uv",
-        "run",
-        "python3",
-        "/workspace/vlearn/train/rl_games_train.py",
-        "hand",
-        "play",
-        str(policy_path),
-        "--headless",
-        "True",
-        "--vsim_path",
-        str(vsim_path),
-        "--games_num",
-        "1",
-        "--max_episode_length",
-        "240",
-        "--num_envs",
-        "1",
-        "--record_output_path",
-        str(folder_path),
-        "--object",
-        object,
-    ]
+    cmd = build_test_cmd(folder_path, vsim_path, object)
+    log_path = folder_path / f"{vsim_path.stem}_test_output.log"
 
-    # Wait for completion and capture output
-    stdout_str, stderr_str = await run_cmd(cmd)
+    await asyncio.to_thread(run_cmd, cmd, log_path=log_path)
 
-    # write to log files for debugging
-    test_output_name = f"{vsim_path.stem}_test_output.log"
-    test_output_path = folder_path / test_output_name
-    with open(test_output_path, "w") as f:
-        f.write(" ".join(cmd) + "\n\n")
-        f.write("STDOUT:\n")
-        f.write(stdout_str)
-        f.write("\n\nSTDERR:\n")
-        f.write(stderr_str)
-
-async def png_to_video(folder_path: Path, timestamp: str):
-    cmd = [
-        "ffmpeg",
-        "-framerate",
-        "60",
-        "-i",
-        str(folder_path / "step_%06d.png"),
-        "-c:v",
-        "libx264",
-        "-pix_fmt",
-        "yuv420p",
-        str(folder_path / f"{timestamp}.mp4"),
-    ]
-    stdout_str, stderr_str = await run_cmd(cmd)
-
-    # write to log files for debugging
-    test_output_name = f"{timestamp}_video.log"
-    test_output_path = folder_path / test_output_name
-    with open(test_output_path, "w") as f:
-        f.write("STDOUT:\n")
-        f.write(stdout_str)
-        f.write("\n\nSTDERR:\n")
-        f.write(stderr_str)
-
-async def create_video(timestamp: str):
-    # run ffmpeg -framerate 60 -i step_%06d.png -c:v libx264 -pix_fmt yuv420p output.mp4
-    cameras = ["camera_0", "camera_1"]
-    for camera in cameras:
-        folder_path = SERVER_DATA_DIR / timestamp / f"table_with_camera/{camera}"
-        await png_to_video(folder_path, timestamp)
 
 async def generate_vsim(timestamp: str) -> int:
-    from oph_to_urdf import load_params, generate_hand_urdf, urdf_to_text
-
     json_path = SERVER_DATA_DIR / timestamp / f"{timestamp}.json"
+    vsim_path = SERVER_DATA_DIR / timestamp / f"{timestamp}.vsim"
 
     print(f"Loading parameters from {json_path}")
-    params = load_params(json_path)
-
-    nf = params["n_fingers"]
-    nt = params["n_thumbs"]
-    print(f"Generating URDF: {nf} finger(s), {nt} thumb(s)")
-
-    urdf = generate_hand_urdf(params)
-
-    urdf_text = urdf_to_text(urdf, pretty_print=True)
-
-    vsim_path = SERVER_DATA_DIR / timestamp / f"{timestamp}.vsim"
-    vsim_path.write_text(urdf_text)
-    print(f"URDF written to {vsim_path}")
-
-    n_links = len(urdf.robot.links)
-    n_joints = len(urdf.robot.joints)
-    n_rev = sum(1 for j in urdf.robot.joints if j.type == "revolute")
-    print(f"  Links: {n_links}  |  Joints: {n_joints} ({n_rev} revolute) | Tendons: {len(urdf._tendons)}")
-
-    return len(urdf._tendons)
+    num_tendons = await asyncio.to_thread(generate_vsim_from_json, json_path, vsim_path)
+    print(f"Generated VSIM with {num_tendons} tendons: {vsim_path}")
+    return num_tendons
 
 
-async def zip_results(timestamp: str) -> FileResponse:
-    zip_path = SERVER_DATA_DIR / timestamp / f"{timestamp}.zip"
-    reward_log_path = SERVER_DATA_DIR / timestamp / f"{timestamp}_reward_log.txt"
-    cameras = ["camera_0", "camera_1"]
-    video_output_paths = [SERVER_DATA_DIR / timestamp / f"table_with_camera/{camera}" / f"{timestamp}.mp4" for camera in cameras]
-    with zipfile.ZipFile(zip_path, "w") as zipf:
-        zipf.write(reward_log_path, reward_log_path.name)
-        for i, video_output_path in enumerate(video_output_paths):
-            zipf.write(video_output_path, video_output_path.name + f"_{i:02d}.mp4")
+async def zip_results(timestamp: str) -> Path:
+    folder_path = SERVER_DATA_DIR / timestamp
+    zip_path = await asyncio.to_thread(zip_run_artifacts, folder_path, timestamp)
+    return zip_path
 
 
 async def process_json(timestamp, file: UploadFile = File(...)) -> Path:
@@ -233,11 +113,11 @@ def _cleanup_background_job(task: asyncio.Task):
 async def run_pipeline(timestamp: str, object: str):
     clear_vlearn_convex_cache()
     num_dof = await generate_vsim(timestamp)
-    cached_policy = await check_for_cached_policy(timestamp, object, num_dof)
+    cached_policy = await check_for_cached_policy(object, num_dof)
     await run_rl(timestamp, object, cached_policy)
-    await cache_policy(timestamp, object, num_dof)
+    await cache_trained_policy(timestamp, object, num_dof)
     await test_rl(timestamp, object)
-    await create_video(timestamp)
+    await asyncio.to_thread(create_videos, SERVER_DATA_DIR / timestamp, timestamp)
     await zip_results(timestamp)
     print(f"Background job {timestamp} finished")
 

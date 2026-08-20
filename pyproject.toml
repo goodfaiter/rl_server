@@ -12,6 +12,7 @@ dependencies = [
     "fastapi>=0.136.1",
     "oph_to_urdf",
     "optimal_morphology_rl",
+    "optimal_morphology_rl_pipeline",
     "python-multipart>=0.0.28",
     "uvicorn>=0.47.0",
 ]
@@ -19,6 +20,7 @@ dependencies = [
 [tool.uv.sources]
 oph_to_urdf = { workspace = true, editable = true }
 optimal_morphology_rl = { workspace = true, editable = true }
+optimal_morphology_rl_pipeline = { workspace = true, editable = true }
 
 [tool.hatch.build.targets.wheel]
 py-modules = ["rl_server"]
