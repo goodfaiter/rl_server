@@ -285,6 +285,10 @@ async def process(file: UploadFile = File(...), object: str = "tomato"):
 async def process_request(file: UploadFile = File(...)):
     return await process(file, object="tomato")
 
+@app.post("/run/tomato_extreme")
+async def process_request(file: UploadFile = File(...)):
+    return await process(file, object="tomato_extreme")
+
 @app.post("/run/drawer")
 async def process_request(file: UploadFile = File(...)):
     return await process(file, object="drawer")
