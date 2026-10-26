@@ -48,7 +48,7 @@ async def check_for_cached_policy(object: str, num_dof: int) -> Optional[Path]:
     return find_cached_policy(
         object,
         num_dof,
-        excluded_objects=("cube", "button_difficult"),
+        excluded_objects=("cube", "button_difficult", "tomato_extreme"),
     )
 
 
